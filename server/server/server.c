@@ -1,154 +1,142 @@
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
-/* 
- This file was written for instruction purposes for the 
- course "Introduction to Systems Programming" at Tel-Aviv
- University, School of Electrical Engineering.
-Last updated by Amnon Drory, Winter 2011.
- */
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
-
 #define _CRT_SECURE_NO_WARNINGS
-
 #include <stdio.h>
 #include <string.h>
 #include <winsock2.h>
+#include <Windows.h>
+#include <ctype.h>
+#include <assert.h>
+#include <tchar.h>
 
+#include "list.h"
 #include "server.h"
+#include "utils.h"
 #include "SocketSendRecvTools.h"
 #include "SocketExampleShared.h"
 
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
+#define SEND_STR_SIZE 35
+HANDLE* ThreadHandles;
+SOCKET* ThreadInputs;
+FILE *ServerLog;
 
 int NUM_OF_WORKER_THREADS;
 int MAX_LOOPS;
-
-#define SEND_STR_SIZE 35
-
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
-
-HANDLE* ThreadHandles;
-SOCKET* ThreadInputs;
-
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
-
 static int FindFirstUnusedThreadSlot();
 static void CleanupWorkerThreads();
 static DWORD ServiceThread( SOCKET *t_socket );
 
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
-void InitParams(maxClients);
+LPCTSTR MutexName = _T( "MutexTop" );
+HANDLE MutexHandle;
+SOCKET MainSocket;
+
+void InitParams(int maxClients);
+List* Users;
+
+HANDLE CreateMutexSimple( LPCTSTR MutexName )
+{
+	return CreateMutex( 
+		NULL,              // default security attributes
+		FALSE,             // initially not owned
+		MutexName);             
+}
+
+//***************************************************************
+// Main Server - open file, open socket, accept conections and
+//               and sending worker thread to each connection
+//****************************************************************
 
 void MainServer(int portNumber,int maxClients)
 {
 	int Ind;
 	int Loop;
-	SOCKET MainSocket = INVALID_SOCKET;
-	unsigned long Address;
 	SOCKADDR_IN service;
 	int bindRes;
 	int ListenRes;
 	WSADATA wsaData;
+	DWORD waitRes;
 	// Initialize Winsock.
-    int StartupRes = WSAStartup( MAKEWORD( 2, 2 ), &wsaData );	           
-
-    if ( StartupRes != NO_ERROR )
+	int StartupRes = WSAStartup( MAKEWORD( 2, 2 ), &wsaData );	           
+	ServerLog = fopen("server_log.text","w+");
+	if (ServerLog == NULL )
 	{
-        printf( "error %ld at WSAStartup( ), ending program.\n", WSAGetLastError() );
-		// Tell the user that we could not find a usable WinSock DLL.                                  
+		printf("Failed to create log file\n");
+		exit(1);
+	}
+	MainSocket = INVALID_SOCKET;
+
+	if ( StartupRes != NO_ERROR )
+	{
+		printf( "error %ld at WSAStartup( ), ending program.\n", WSAGetLastError() );
 		return;
 	}
-	
-    /* The WinSock DLL is acceptable. Proceed. */
 	InitParams(maxClients);
+	MainSocket = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
 
-    // Create a socket.    
-    MainSocket = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
-
-    if ( MainSocket == INVALID_SOCKET ) 
+	if ( MainSocket == INVALID_SOCKET ) 
 	{
-        printf( "Error at socket( ): %ld\n", WSAGetLastError( ) );
-		goto server_cleanup_1;
-    }
-
-    // Bind the socket.
-	/*
-		For a server to accept client connections, it must be bound to a network address within the system. 
-		The following code demonstrates how to bind a socket that has already been created to an IP address 
-		and port.
-		Client applications use the IP address and port to connect to the host network.
-		The sockaddr structure holds information regarding the address family, IP address, and port number. 
-		sockaddr_in is a subset of sockaddr and is used for IP version 4 applications.
-   */
-	// Create a sockaddr_in object and set its values.
-	// Declare variables
-
-	Address = inet_addr( SERVER_ADDRESS_STR );
-	if ( Address == INADDR_NONE )
-	{
-		printf("The string \"%s\" cannot be converted into an ip address. ending program.\n",
-				SERVER_ADDRESS_STR );
-		goto server_cleanup_2;
+		printf( "Error at socket( ): %ld\n", WSAGetLastError( ) );
+		exit(1);
 	}
-
-    service.sin_family = AF_INET;
-    service.sin_addr.s_addr = Address;
-    service.sin_port = htons( portNumber ); //The htons function converts a u_short from host to TCP/IP network byte order 
-	                                   //( which is big-endian ).
-	/*
-		The three lines following the declaration of sockaddr_in service are used to set up 
-		the sockaddr structure: 
-		AF_INET is the Internet address family. 
-		"127.0.0.1" is the local IP address to which the socket will be bound. 
-	    2345 is the port number to which the socket will be bound.
-	*/
-
-	// Call the bind function, passing the created socket and the sockaddr_in structure as parameters. 
-	// Check for general errors.
-    bindRes = bind( MainSocket, ( SOCKADDR* ) &service, sizeof( service ) );
+	service.sin_family = AF_INET;
+	service.sin_addr.s_addr = INADDR_ANY;
+	service.sin_port = htons( portNumber ); //The htons function converts a u_short from host to TCP/IP network byte order 
+	
+	bindRes = bind( MainSocket, ( SOCKADDR* ) &service, sizeof( service ) );
 	if ( bindRes == SOCKET_ERROR ) 
 	{
-        printf( "bind( ) failed with error %ld. Ending program\n", WSAGetLastError( ) );
-		goto server_cleanup_2;
-	}
-    
-    // Listen on the Socket.
-	ListenRes = listen( MainSocket, SOMAXCONN );
-    if ( ListenRes == SOCKET_ERROR ) 
-	{
-        printf( "Failed listening on socket, error %ld.\n", WSAGetLastError() );
-		goto server_cleanup_2;
+		printf( "bind( ) failed with error %ld. Ending program\n", WSAGetLastError( ) );
+		exit(1);
 	}
 
-	// Initialize all thread handles to NULL, to mark that they have not been initialized
+	ListenRes = listen( MainSocket, SOMAXCONN );
+	if ( ListenRes == SOCKET_ERROR ) 
+	{
+		printf( "Failed listening on socket, error %ld.\n", WSAGetLastError() );
+		exit(1);
+	}
+
+	MutexHandle = CreateMutexSimple( MutexName );
+	if (MutexHandle == NULL) 
+	{
+		printf("CreateMutex error: %d\n", GetLastError());
+	}
+
 	for ( Ind = 0; Ind < NUM_OF_WORKER_THREADS; Ind++ )
 		ThreadHandles[Ind] = NULL;
 
-    printf( "Waiting for a client to connect...\n" );
-    
+	printf( "Waiting for a client to connect...\n" );
+
 	for ( Loop = 0; Loop < MAX_LOOPS; Loop++ )
 	{
-		SOCKET AcceptSocket = accept( MainSocket, NULL, NULL );
+		SOCKET AcceptSocket;
+		AcceptSocket = accept( MainSocket, NULL, NULL );
 		if ( AcceptSocket == INVALID_SOCKET )
 		{
 			printf( "Accepting connection with client failed, error %ld\n", WSAGetLastError() ) ; 
-			goto server_cleanup_3;
+			CleanupWorkerThreads();
+			exit(1);
 		}
-
-        printf( "Client Connected.\n" );
 
 		Ind = FindFirstUnusedThreadSlot();
 
 		if ( Ind == NUM_OF_WORKER_THREADS ) //no slot is available
 		{ 
-			printf( "No slots available for client, dropping the connection.\n" );
+			fprintf(ServerLog,"SYSTEM:: No available socket at the moment. Try again later.\n");
+			if (SendString( "No available socket at the moment. Try again later.", AcceptSocket ) == TRNS_FAILED ) 
+			{
+				printf( "Service socket error while writing, closing thread.\n" );
+			}
 			closesocket( AcceptSocket ); //Closing the socket, dropping the connection.
+			Loop = Loop -1;
 		} 
 		else 	
 		{
+			printf( "Client Connected.\n" );
+			if (SendString( "connected", AcceptSocket ) == TRNS_FAILED ) 
+			{
+				printf( "Service socket error while writing, closing thread.\n" );
+			}
+			Loop = Loop -1;
 			ThreadInputs[Ind] = AcceptSocket; // shallow copy: don't close 
-											  // AcceptSocket, instead close 
-											  // ThreadInputs[Ind] when the
-											  // time comes.
 			ThreadHandles[Ind] = CreateThread(
 				NULL,
 				0,
@@ -156,24 +144,15 @@ void MainServer(int portNumber,int maxClients)
 				&( ThreadInputs[Ind] ),
 				0,
 				NULL
-			);
+				);
 		}
-    } // for ( Loop = 0; Loop < MAX_LOOPS; Loop++ )
+	}
 
-server_cleanup_3:
-
-	CleanupWorkerThreads();
-
-server_cleanup_2:
-	if ( closesocket( MainSocket ) == SOCKET_ERROR )
-		printf("Failed to close MainSocket, error %ld. Ending program\n", WSAGetLastError() ); 
-
-server_cleanup_1:
-	if ( WSACleanup() == SOCKET_ERROR )		
-		printf("Failed to close Winsocket, error %ld. Ending program.\n", WSAGetLastError() );
 }
 
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
+//********************************************************************
+// FindFirstUnusedThreadSlot - bring back indication of unused thread
+//********************************************************************
 
 static int FindFirstUnusedThreadSlot()
 { 
@@ -187,7 +166,7 @@ static int FindFirstUnusedThreadSlot()
 		{
 			// poll to check if thread finished running:
 			DWORD Res = WaitForSingleObject( ThreadHandles[Ind], 0 ); 
-				
+
 			if ( Res == WAIT_OBJECT_0 ) // this thread finished running
 			{				
 				CloseHandle( ThreadHandles[Ind] );
@@ -200,8 +179,9 @@ static int FindFirstUnusedThreadSlot()
 	return Ind;
 }
 
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
-
+//*****************************************************************************
+// CleanupWorkerThreads - exit flow- close socket and handlers for all threads
+//*****************************************************************************
 static void CleanupWorkerThreads()
 {
 	int Ind; 
@@ -210,9 +190,8 @@ static void CleanupWorkerThreads()
 	{
 		if ( ThreadHandles[Ind] != NULL )
 		{
-			// poll to check if thread finished running:
 			DWORD Res = WaitForSingleObject( ThreadHandles[Ind], INFINITE ); 
-				
+
 			if ( Res == WAIT_OBJECT_0 ) 
 			{
 				closesocket( ThreadInputs[Ind] );
@@ -229,89 +208,185 @@ static void CleanupWorkerThreads()
 	}
 }
 
-/*oOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoOoO*/
-
-//Service thread is the thread that opens for each successful client connection and "talks" to the client.
-static DWORD ServiceThread( SOCKET *t_socket ) 
+//*****************************************************
+// CleanupWorkerThreads - check recv string from client
+//*****************************************************
+int ValidateReceivingString(TransferResult_t recvRes)
 {
-	char SendStr[SEND_STR_SIZE];
-
-	BOOL Done = FALSE;
-	TransferResult_t SendRes;
-	TransferResult_t RecvRes;
-
-	strcpy( SendStr, "Welcome to this server!" );
-
-	SendRes = SendString( SendStr, *t_socket );
-	
-	if ( SendRes == TRNS_FAILED ) 
+	if ( recvRes == TRNS_FAILED )
 	{
-		printf( "Service socket error while writing, closing thread.\n" );
-		closesocket( *t_socket );
-		return 1;
+		printf( "Service socket error while reading, closing thread.\n" );
+		return 0;
 	}
-	
-	while ( !Done ) 
-	{		
-		char *AcceptedStr = NULL;
-		
-		RecvRes = ReceiveString( &AcceptedStr , *t_socket );
+	else if ( recvRes == TRNS_DISCONNECTED )
+	{
+		printf( "Connection closed while reading, closing thread.\n" );
+		return 0;
+	}
+	return 1;
+}
 
-		if ( RecvRes == TRNS_FAILED )
+//********************************************************
+// CleanupWorkerThreads - translate command from client
+//                        and execute handler for each cmd
+//********************************************************
+DWORD HandleClientCommand(char* str, SOCKET *sourceSocket,BOOL* Done,char* clientNameStr)
+{
+
+	char* pch;
+	char* command;
+	char* newCommand;
+	char* arg1;
+	char* arg2;
+	ErrorCode_t errorCode;
+	char* systemMessage;
+	char* strCopy = (char*) malloc (strlen(str)*sizeof(char));
+	if (strCopy == NULL)
+	{
+		exit(1);
+	}
+	strcpy(strCopy,str);
+	command = strtok (str," ");
+	newCommand = command +1;
+	if (STRINGS_ARE_EQUAL(command,"/quit"))
+	{
+		fprintf(ServerLog,"REQUEST::from %s: %s\n",clientNameStr,newCommand);
+
+		*Done = TRUE;
+		return ISP_SUCCESS;
+	}
+	else if (STRINGS_ARE_EQUAL(command,"/active_users"))
+	{
+		errorCode = SendActiveUsers(sourceSocket, Users, MutexHandle,clientNameStr,&systemMessage,ServerLog);
+		if (errorCode == ISP_SUCCESS)
 		{
-			printf( "Service socket error while reading, closing thread.\n" );
-			closesocket( *t_socket );
-			return 1;
+			fprintf(ServerLog,"REQUEST::from %s: %s\n",clientNameStr,newCommand);
 		}
-		else if ( RecvRes == TRNS_DISCONNECTED )
+		return errorCode;
+	}
+
+	else if (strlen(command)>0 && command[0] != '/')
+	{
+		errorCode = SendPublicMessage(strCopy,clientNameStr,MutexHandle,Users,*sourceSocket);
+		if (errorCode == ISP_SUCCESS)
 		{
-			printf( "Connection closed while reading, closing thread.\n" );
-			closesocket( *t_socket );
-			return 1;
+			fprintf(ServerLog,"CONVERSATION:: %s: %s\n",clientNameStr,strCopy);
+		}
+		return errorCode;
+	}
+
+	else if (STRINGS_ARE_EQUAL(command,"/private_message"))
+	{
+		arg1 = strtok (NULL," ");
+		arg2 = strtok (NULL,"\0");
+		if (arg1 != NULL ) 
+		{
+			errorCode = SendPrivateMessage(arg1,clientNameStr,arg2, MutexHandle, Users,sourceSocket,ServerLog);
+			if (errorCode == ISP_SUCCESS)
+			{
+				fprintf(ServerLog,"CONVERSATION:: private message from %s to %s: %s\n",clientNameStr,arg1,arg2);
+			}
+			return errorCode;
 		}
 		else
 		{
-			printf( "Got string : %s\n", AcceptedStr );
+			return ISP_NO_SUCCESS;
 		}
+	}
 
-		//After reading a single line, checking to see what to do with it
-		//If got "hello" send back "what's up?"
-		//If got "how are you?" send back "great"
-		//If got "bye" send back "see ya!" and then end the thread
-		//Otherwise, send "I don't understand"
-		
-		if ( STRINGS_ARE_EQUAL( AcceptedStr , "hello" ) ) 
-			{ strcpy( SendStr, "what's up?" );} 
-		else if ( STRINGS_ARE_EQUAL( AcceptedStr , "how are you?" ) ) 
-			{ strcpy( SendStr, "great" ); }
-		else if ( STRINGS_ARE_EQUAL( AcceptedStr, "bye" )) 
+	return ISP_NO_SUCCESS;
+}
+//*****************************************************************
+// Service thread - thread that opens for each successful
+//                  client connection and "talks" to the client.
+//                  handle send/rcvd actions
+//*****************************************************************
+DWORD ServiceThread( SOCKET *t_socket ) 
+{
+	char SendStr[SEND_STR_SIZE];
+	char *clientNameStr = NULL;
+	AccessResult accessResult = NO_ACCESS;
+	BOOL Done = FALSE;
+	TransferResult_t sendRes;
+	TransferResult_t recvRes;
+	recvRes = ReceiveString( &clientNameStr , *t_socket );
+	if (HandleAccessRequest(clientNameStr,&accessResult,*t_socket,MutexHandle,Users,ServerLog) != ISP_SUCCESS)
+	{
+		closesocket( *t_socket );
+		return 1;
+	}
+	if (accessResult == NO_ACCESS)
+	{
+		fprintf(ServerLog,"SYSTEM:: %s already taken!\n",clientNameStr);
+		if (SendString("already taken!", *t_socket) == TRNS_FAILED)
 		{
-			strcpy( SendStr, "see ya!" );
-			Done = TRUE;
-		}
-		else 
-			{ strcpy( SendStr, "I don't understand" ); }
-
-		SendRes = SendString( SendStr, *t_socket );
-	
-		if ( SendRes == TRNS_FAILED ) 
-		{
-			printf( "Service socket error while writing, closing thread.\n" );
 			closesocket( *t_socket );
 			return 1;
 		}
-
-		free( AcceptedStr );		
+		closesocket( *t_socket );
+		return 0;
+	}
+	//Session connected
+	sendRes = SendString("welcome to the session.", *t_socket );
+	fprintf(ServerLog,"SYSTEM:: sent to %s: Hello %s, welcome to the session\n",clientNameStr,clientNameStr); 
+	if ( sendRes == TRNS_FAILED ) 
+	{
+		if (LeaveSessionFlow(clientNameStr,*t_socket,Users,MutexHandle,ServerLog) == ISP_EXIT_PROGRAM)
+		{
+			return ISP_EXIT_PROGRAM;
+		}
+		closesocket( *t_socket );
+		return ISP_NO_SUCCESS;
+	}
+	while ( !Done ) 
+	{		
+		char* sessionStr = NULL;
+		recvRes = ReceiveString( &sessionStr , *t_socket );
+		if (!ValidateReceivingString(recvRes))
+		{
+			if (LeaveSessionFlow(clientNameStr,*t_socket,Users,MutexHandle,ServerLog) == ISP_EXIT_PROGRAM)
+			{
+				return ISP_EXIT_PROGRAM;
+			}
+			closesocket( *t_socket );
+			return ISP_NO_SUCCESS;
+		}
+		if (HandleClientCommand( sessionStr, t_socket ,&Done,clientNameStr) != ISP_SUCCESS)
+		{
+			char* message = ConcatString("No such command: ",sessionStr + 1,"");
+			fprintf(ServerLog,"SYSTEM:: sent to %s: No such command: %s\n",clientNameStr,sessionStr);
+			sendRes = SendString(message, *t_socket );
+			if ( sendRes == TRNS_FAILED ) 
+			{
+				printf( "Service socket error while writing, closing thread.\n" );
+				if (LeaveSessionFlow(clientNameStr,*t_socket,Users,MutexHandle,ServerLog) == ISP_EXIT_PROGRAM)
+				{
+					return ISP_EXIT_PROGRAM;
+				}
+				closesocket( *t_socket );
+				return ISP_NO_SUCCESS;
+			}
+		}
+		free( sessionStr );		
 	}
 
-	printf("Conversation ended.\n");
+	if (LeaveSessionFlow(clientNameStr,*t_socket,Users,MutexHandle,ServerLog) == ISP_EXIT_PROGRAM)
+	{
+		return ISP_EXIT_PROGRAM;
+	}
+
 	closesocket( *t_socket );
-	return 0;
+	return ISP_SUCCESS;
 }
+//*****************************************************
+// InitParams - init is a short is a short of initialization
+//              in Hebrew - "ithul"
+//*******************************************************
 void InitParams(int maxClients)
 {
 	NUM_OF_WORKER_THREADS = maxClients;
 	MAX_LOOPS = NUM_OF_WORKER_THREADS +1;
+
 	ThreadHandles =(HANDLE*) malloc(NUM_OF_WORKER_THREADS*sizeof(*ThreadHandles));
 	if (ThreadHandles == NULL){
 		exit(1);
@@ -320,4 +395,16 @@ void InitParams(int maxClients)
 	if (ThreadInputs == NULL){
 		exit(1);
 	}
+	Users = CreateList();
+}
+//*******************************************************
+// CloseSession - last thread will close the main socket
+//                and close server file
+//*******************************************************
+void CloseSession(SOCKET sourceSocket)
+{
+	closesocket(sourceSocket);
+	closesocket(MainSocket);
+	CloseHandle(MutexHandle);
+	fclose(ServerLog);
 }

@@ -3,6 +3,11 @@
 #include<stdlib.h>
 #include"server.h"
 
+//---------------------------------------------------------------------------
+// Main.c -  includes of handling input parameters and file creations, 
+//           calling main server prog
+//---------------------------------------------------------------------------
+
 int main(int argc,char** argv)
 {
 	int portNumber, maxClients;
@@ -18,8 +23,5 @@ int main(int argc,char** argv)
 		printf("Argument Prameters are not correct\n");
 		return 0;
 	}
-	printf("Shani is need to go buy Bamba %d %d\n",portNumber,maxClients);
 	MainServer(portNumber,maxClients);
-
-	while(1);
 }

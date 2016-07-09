@@ -24,15 +24,24 @@
     <ClCompile Include="SocketSendRecvTools.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="utils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="list.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="server.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="SocketExampleShared.h">
+    <ClInclude Include="SocketSendRecvTools.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="SocketSendRecvTools.h">
+    <ClInclude Include="utils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="list.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
